@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+uploads/
+converted/
+.dockerignore
+*.log
+*.mp4
+*.avi
+*.mov
+*.webm
+*.mkv
