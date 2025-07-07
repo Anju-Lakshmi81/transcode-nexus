@@ -9,3 +9,4 @@ converted/
 *.mov
 *.webm
 *.mkv
+.env
