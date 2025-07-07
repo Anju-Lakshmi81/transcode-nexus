@@ -13,7 +13,7 @@ WORKDIR /app
 COPY . /app
 
 # Install Python packages
-RUN pip install flask
+RUN pip install --upgrade flask boto3
 
 # Expose Flask port
 EXPOSE 5000

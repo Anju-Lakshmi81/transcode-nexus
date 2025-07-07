@@ -44,7 +44,12 @@
             <option value="0.25">25%</option>
         </select>
     </div>
+       <div class="form-group">
+        <label for="email">Your Email (to receive download link)</label>
+        <input type="email" class="form-control" name="email" placeholder="you@example.com" required>
+    </div>
 
+  
     <button type="submit" class="btn btn-success">Convert Video</button>
 </form>
 
@@ -55,9 +60,12 @@
     {{ success }}
 </div>
 {% endif %}
-
 {% if download_link %}
-    <a href="{{ download_link }}" class="btn btn-primary mt-2">Download Converted Video</a>
+  <p style="margin-top: 15px;">
+    <a href="{{ download_link | replace('http://', 'https://') }}" target="_blank" style="font-size:18px; color:green; font-weight:bold;">
+      📥 Click here to download your converted video
+    </a>
+  </p>
 {% endif %}
         </div>
     </div>

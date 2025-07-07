@@ -23,7 +23,7 @@ s3_client = boto3.client(
     config=Config(signature_version='s3v4')
 )
 
-ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'webm', 'mkv'}
+ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'webm'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -45,7 +45,7 @@ def send_email(to_email, download_url):
     msg['To'] = to_email
     msg['Subject'] = '✅ Your Video is Ready to Download!'
 
-    body = f"Hi,\n\nYour converted video is ready:\n{download_url}\n\nLink is valid for 1 hour."
+    body = f"Hi,\n\nYour converted video is ready:\n{download_url}\n\nLink valid for 1 hour."
     msg.attach(MIMEText(body, 'plain'))
 
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
@@ -60,9 +60,9 @@ def upload_and_convert():
     if request.method == 'POST':
         video = request.files.get('video')
         if not video or not allowed_file(video.filename):
-            return render_template('index.html', error="❌ Invalid file type. Please upload .mp4, .avi, .mov, .mkv, or .webm.")
+            return render_template('index.html', error="❌ Invalid file type. Please upload .mp4, .avi, .mov, or .webm.")
 
-        format = request.form.get('format', 'avi').lower()
+        format = request.form.get('format', 'avi')
         email = request.form.get('email')
 
         try:
@@ -80,7 +80,9 @@ def upload_and_convert():
         output_filename = f"{os.path.splitext(filename)[0]}_converted.{format}"
         output_path = f"/tmp/{output_filename}"
 
-        # Handle different formats
+        crf = int((1 - compression) * 40)
+        crf = max(0, min(crf, 40))
+
         if format == 'webm':
             ffmpeg_cmd = [
                 'ffmpeg', '-i', input_path,
@@ -89,12 +91,9 @@ def upload_and_convert():
                 output_path
             ]
         else:
-            crf = int((1 - compression) * 40)
-            crf = max(0, min(crf, 40))
             ffmpeg_cmd = [
                 'ffmpeg', '-i', input_path,
                 '-vcodec', 'libx264', '-crf', str(crf),
-                '-acodec', 'libmp3lame',
                 output_path
             ]
 
@@ -103,22 +102,21 @@ def upload_and_convert():
         # Upload converted file to S3
         s3_client.upload_file(output_path, S3_BUCKET, f"converted/{output_filename}")
 
-        # Generate signed URL (shown on screen)
+        # Generate signed URL
         url = s3_client.generate_presigned_url(
             ClientMethod='get_object',
             Params={'Bucket': S3_BUCKET, 'Key': f"converted/{output_filename}"},
             ExpiresIn=3600
         )
 
-        # Email after rendering (safe fail if email fails)
+        print("Presigned URL:", url)
+
+        # Send email with download link
         if email:
-            try:
-                send_email(email, url)
-            except Exception as e:
-                print(f"Email error: {e}")
+            send_email(email, url)
 
         size = os.path.getsize(output_path) / (1024 * 1024)
-        success_msg = f"✅ Conversion successful! File size: {size:.2f} MB. Download link shown below."
+        success_msg = f"✅ Conversion successful! File size: {size:.2f} MB. A download link has been emailed."
 
         return render_template('index.html', success=success_msg, download_link=url)
 
