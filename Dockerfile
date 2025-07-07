@@ -13,7 +13,7 @@ WORKDIR /app
 COPY . /app
 
 # Install Python packages
-RUN pip install --upgrade flask boto3
+RUN pip install --upgrade flask boto3 celery redis
 
 # Expose Flask port
 EXPOSE 5000

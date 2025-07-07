@@ -1,20 +1,16 @@
 from flask import Flask, request, render_template
-import subprocess
+from werkzeug.utils import secure_filename
 import os
 import time
-import smtplib
 import boto3
 from botocore.client import Config
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from werkzeug.utils import secure_filename
+from tasks import convert_video_task  # Celery task
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB max upload
 
-# AWS S3 setup
+# AWS S3 config
 S3_BUCKET = "transcode-nexus-storage"
-
 s3_client = boto3.client(
     's3',
     region_name='ap-south-1',
@@ -28,6 +24,7 @@ ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'webm', 'mkv'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Auto-delete old files from S3
 def clean_old_s3_files(prefix, age_limit_minutes=30):
     objects = s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
     if 'Contents' in objects:
@@ -35,22 +32,6 @@ def clean_old_s3_files(prefix, age_limit_minutes=30):
             age = time.time() - obj['LastModified'].timestamp()
             if age > age_limit_minutes * 60:
                 s3_client.delete_object(Bucket=S3_BUCKET, Key=obj['Key'])
-
-def send_email(to_email, download_url):
-    from_email = os.environ['EMAIL_ADDRESS']
-    password = os.environ['EMAIL_PASSWORD']
-
-    msg = MIMEMultipart()
-    msg['From'] = from_email
-    msg['To'] = to_email
-    msg['Subject'] = '✅ Your Video is Ready to Download!'
-
-    body = f"Hi,\n\nYour converted video is ready:\n{download_url}\n\nLink is valid for 1 hour."
-    msg.attach(MIMEText(body, 'plain'))
-
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-        server.login(from_email, password)
-        server.sendmail(from_email, to_email, msg.as_string())
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_and_convert():
@@ -60,7 +41,7 @@ def upload_and_convert():
     if request.method == 'POST':
         video = request.files.get('video')
         if not video or not allowed_file(video.filename):
-            return render_template('index.html', error="❌ Invalid file type. Please upload .mp4, .avi, .mov, .mkv, or .webm.")
+            return render_template('index.html', error="❌ Invalid file. Please upload .mp4, .avi, .mov, .webm, or .mkv files only.")
 
         format = request.form.get('format', 'avi').lower()
         email = request.form.get('email')
@@ -74,55 +55,16 @@ def upload_and_convert():
         input_path = f"/tmp/{filename}"
         video.save(input_path)
 
-        # Upload original to S3
+        # Upload the original to S3
         s3_client.upload_file(input_path, S3_BUCKET, f"uploads/{filename}")
 
-        output_filename = f"{os.path.splitext(filename)[0]}_converted.{format}"
-        output_path = f"/tmp/{output_filename}"
+        # Trigger background Celery task
+        convert_video_task.delay(filename, format, email, compression)
 
-        # Handle different formats
-        if format == 'webm':
-            ffmpeg_cmd = [
-                'ffmpeg', '-i', input_path,
-                '-c:v', 'libvpx', '-b:v', '1M',
-                '-c:a', 'libopus',
-                output_path
-            ]
-        else:
-            crf = int((1 - compression) * 40)
-            crf = max(0, min(crf, 40))
-            ffmpeg_cmd = [
-                'ffmpeg', '-i', input_path,
-                '-vcodec', 'libx264', '-crf', str(crf),
-                '-acodec', 'libmp3lame',
-                output_path
-            ]
-
-        subprocess.run(ffmpeg_cmd)
-
-        # Upload converted file to S3
-        s3_client.upload_file(output_path, S3_BUCKET, f"converted/{output_filename}")
-
-        # Generate signed URL (shown on screen)
-        url = s3_client.generate_presigned_url(
-            ClientMethod='get_object',
-            Params={'Bucket': S3_BUCKET, 'Key': f"converted/{output_filename}"},
-            ExpiresIn=3600
-        )
-
-        # Email after rendering (safe fail if email fails)
-        if email:
-            try:
-                send_email(email, url)
-            except Exception as e:
-                print(f"Email error: {e}")
-
-        size = os.path.getsize(output_path) / (1024 * 1024)
-        success_msg = f"✅ Conversion successful! File size: {size:.2f} MB. Download link shown below."
-
-        return render_template('index.html', success=success_msg, download_link=url)
+        return render_template('index.html', success="✅ Upload successful! You’ll receive an email with the download link once the conversion is complete.")
 
     return render_template('index.html')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
