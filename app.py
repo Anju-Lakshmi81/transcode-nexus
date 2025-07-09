@@ -1,13 +1,27 @@
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, jsonify
 from werkzeug.utils import secure_filename
 import os
 import time
 import boto3
 from botocore.client import Config
+from celery import Celery
 from tasks import convert_video_task  # Celery task
+from celery.result import AsyncResult
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB max upload
+
+# Celery setup
+def make_celery(app):
+    celery = Celery(
+        app.import_name,
+        backend='redis://redis:6379/0',
+        broker='redis://redis:6379/0'
+    )
+    celery.conf.update(app.config)
+    return celery
+
+celery = make_celery(app)
 
 # AWS S3 config
 S3_BUCKET = "transcode-nexus-storage"
@@ -41,7 +55,7 @@ def upload_and_convert():
     if request.method == 'POST':
         video = request.files.get('video')
         if not video or not allowed_file(video.filename):
-            return render_template('index.html', error="❌ Invalid file. Please upload .mp4, .avi, .mov, .webm, or .mkv files only.")
+            return jsonify({'error': "❌ Invalid file. Please upload .mp4, .avi, .mov, .webm, or .mkv files only."}), 400
 
         format = request.form.get('format', 'avi').lower()
         email = request.form.get('email')
@@ -58,13 +72,33 @@ def upload_and_convert():
         # Upload the original to S3
         s3_client.upload_file(input_path, S3_BUCKET, f"uploads/{filename}")
 
-        # Trigger background Celery task
-        convert_video_task.delay(filename, format, email, compression)
+        # Trigger background Celery task and get task_id
+        task = convert_video_task.apply_async(args=[filename, format, email, compression])
 
-        return render_template('index.html', success="✅ Upload successful! You’ll receive an email with the download link once the conversion is complete.")
+        return jsonify({
+            'message': "✅ Upload successful! Conversion in progress.",
+            'task_id': task.id
+        }), 200
 
     return render_template('index.html')
 
+
+@app.route('/status/<task_id>')
+def get_status(task_id):
+    result = AsyncResult(task_id, app=celery)
+
+    if result.status == 'SUCCESS':
+        return jsonify({
+            'status': 'SUCCESS',
+            'download_url': result.result  # This must be the presigned URL returned from Celery
+        })
+    elif result.status == 'FAILURE':
+        return jsonify({'status': 'FAILURE'})
+    else:
+        return jsonify({'status': result.status})
+
+
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-
