@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    volumes:
+      - /tmp:/tmp
+    command: python app.py
+
+  worker:
+    build: .
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    volumes:
+      - /tmp:/tmp
+    command: celery -A tasks worker --loglevel=info
+
+  redis:
+    image: redis:alpine
+
